@@ -1,8 +1,12 @@
 # convex-sveltekit
 
 [![npm](https://img.shields.io/npm/v/convex-sveltekit)](https://www.npmjs.com/package/convex-sveltekit)
+[![CI](https://github.com/axel-rock/convex-sveltekit/actions/workflows/ci.yml/badge.svg)](https://github.com/axel-rock/convex-sveltekit/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/convex-sveltekit)](https://github.com/axel-rock/convex-sveltekit/blob/main/LICENSE)
 
 > SvelteKit-native Convex integration. Real-time queries, form spreading, SSR-to-live transport.
+
+**[Live demo →](https://convex-sveltekit.orage.ai)**
 
 **Status:** Experimental — actively being tested. Expect breaking changes.
 
@@ -274,22 +278,22 @@ export const transport = {
 
 ## API
 
-| Function                              | Purpose                                 |
-| ------------------------------------- | --------------------------------------- |
-| `initConvex(url, opts?, token?)`      | Early client init (hooks.client.ts)     |
-| `setupConvex(url)`                    | Layout init (context + cleanup)         |
-| `convexQuery(ref, args, opts?)`       | Live query in components                |
-| `convexLoad(ref, args)`              | SSR query in load functions             |
-| `convexForm(schema, mutationRef)`     | Form with SvelteKit DX                  |
-| `convexCommand(ref, type?)`           | Programmatic mutation/action            |
-| `setupConvexAuth({ authClient, ... })`| Better Auth ↔ Convex bridge             |
-| `useConvexAuth()`                     | Read auth state (isAuthenticated, etc.) |
-| `convexUser(data)`                    | SSR-to-live user data transport         |
-| `getConvexClient()`                   | Raw client access (escape hatch)        |
-| `useConvexClient()`                   | Client from Svelte context              |
-| `serverQuery(ref, args)`             | Server-side one-shot query              |
-| `serverMutation(ref, args)`          | Server-side one-shot mutation           |
-| `serverAction(ref, args)`            | Server-side one-shot action             |
+| Function                               | Purpose                                 |
+| -------------------------------------- | --------------------------------------- |
+| `initConvex(url, opts?, token?)`       | Early client init (hooks.client.ts)     |
+| `setupConvex(url)`                     | Layout init (context + cleanup)         |
+| `convexQuery(ref, args, opts?)`        | Live query in components                |
+| `convexLoad(ref, args)`                | SSR query in load functions             |
+| `convexForm(schema, mutationRef)`      | Form with SvelteKit DX                  |
+| `convexCommand(ref, type?)`            | Programmatic mutation/action            |
+| `setupConvexAuth({ authClient, ... })` | Better Auth ↔ Convex bridge             |
+| `useConvexAuth()`                      | Read auth state (isAuthenticated, etc.) |
+| `convexUser(data)`                     | SSR-to-live user data transport         |
+| `getConvexClient()`                    | Raw client access (escape hatch)        |
+| `useConvexClient()`                    | Client from Svelte context              |
+| `serverQuery(ref, args)`               | Server-side one-shot query              |
+| `serverMutation(ref, args)`            | Server-side one-shot mutation           |
+| `serverAction(ref, args)`              | Server-side one-shot action             |
 
 ## Roadmap
 
