@@ -12,6 +12,7 @@
   const links = [
     { href: "/demo/server", label: "Server demo" },
     { href: "/demo/client", label: "Client demo" },
+    { href: "/demo/query", label: "Query demo" },
     { href: "/demo/auth", label: "Auth demo" },
   ]
 </script>
@@ -25,7 +26,9 @@
 </svelte:head>
 
 <nav class="site-nav">
-  <a href="/" class="site-logo"><img src="/favicon.svg" alt="" class="site-icon" />convex-sveltekit</a>
+  <a href="/" class="site-logo"
+    ><img src="/favicon.svg" alt="" class="site-icon" />convex-sveltekit</a
+  >
   <div class="site-links">
     {#each links as link (link.href)}
       <a href={link.href} class:active={page.url.pathname.startsWith(link.href)}>{link.label}</a>
