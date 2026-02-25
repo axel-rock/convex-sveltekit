@@ -19,8 +19,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: cp .env.example .env
 
+      - name: Unit tests
+        run: pnpm test
+
       - name: svelte-check
         run: pnpm check
 
       - name: Build & verify package
         run: pnpm package
+
+      - name: Package integration test
+        run: bash scripts/test-package.sh
