@@ -31,6 +31,8 @@ export type ConvexUserData = {
   name: string
   image?: string | null
   isAnonymous?: boolean
+  isAdmin?: boolean
+  impersonatedBy?: string | null
   [key: string]: unknown
 }
 
@@ -84,7 +86,10 @@ export function encodeConvexUser(value: unknown): false | { data: Record<string,
     (value != null && typeof value === "object" && "__convexUser" in value)
   ) {
     // Strip the marker — serialize only the user fields
-    const { __convexUser: _, ...data } = value as ConvexUserResult & Record<string, unknown>
+    const data: Record<string, unknown> = {}
+    for (const [key, entry] of Object.entries(value as ConvexUserResult & Record<string, unknown>)) {
+      if (key !== "__convexUser") data[key] = entry
+    }
     return { data }
   }
   return false
@@ -137,22 +142,27 @@ export function decodeConvexUser<Query extends FunctionReference<"query">>(
     )
   }
 
-  // Reactive proxy — getters read from $state, consumers see a plain user object
-  return {
-    get id() {
-      return current.id
+  // Expose the live user as a raw-ish object so new JWT fields flow through
+  // without whitelisting every property here.
+  return new Proxy({} as ConvexUserData, {
+    get(_target: ConvexUserData, prop: PropertyKey) {
+      return (current as Record<PropertyKey, unknown>)[prop]
     },
-    get email() {
-      return current.email
+    has(_target: ConvexUserData, prop: PropertyKey) {
+      return prop in (current as Record<PropertyKey, unknown>)
     },
-    get name() {
-      return current.name
+    ownKeys() {
+      return Reflect.ownKeys(current as Record<PropertyKey, unknown>)
     },
-    get image() {
-      return current.image
+    getOwnPropertyDescriptor(_target: ConvexUserData, prop: PropertyKey) {
+      const record = current as Record<PropertyKey, unknown>
+      if (!(prop in record)) return undefined
+      return {
+        configurable: true,
+        enumerable: true,
+        value: record[prop],
+        writable: false,
+      }
     },
-    get isAnonymous() {
-      return current.isAnonymous
-    },
-  } as ConvexUserData
+  })
 }
