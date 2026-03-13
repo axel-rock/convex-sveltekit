@@ -9,6 +9,7 @@
  * Read auth state anywhere via `useConvexAuth()`.
  */
 import { createContext } from "svelte"
+import { browser } from "$app/environment"
 import { getConvexClient } from "./client.svelte.js"
 
 // ============================================================================
@@ -62,22 +63,32 @@ export function setupConvexAuth({
   let sessionPending = $state(true)
   let convexAuthed: boolean | null = $state(null)
 
-  // Subscribe to Better Auth session state
-  authClient.useSession().subscribe((session: { data: unknown; isPending: boolean }) => {
-    sessionData = session.data
-    sessionPending = session.isPending
-  })
+  if (browser)
+    // Subscribe to Better Auth session state
+    authClient
+      .useSession()
+      .subscribe((session: { data: unknown; isPending: boolean }) => {
+        sessionData = session.data
+        sessionPending = session.isPending
+      })
 
   const hasSession = $derived(sessionData !== null)
 
   const isAuthenticated = $derived(
-    (!!initialToken && convexAuthed === null) || (hasSession && (convexAuthed ?? false)),
+    (!!initialToken && convexAuthed === null) ||
+    (hasSession && (convexAuthed ?? false)),
   )
-  const isLoading = $derived(sessionPending || (hasSession && convexAuthed === null))
+  const isLoading = $derived(
+    sessionPending || (hasSession && convexAuthed === null),
+  )
 
   // Fetch a Convex-compatible JWT from Better Auth.
   // Returns pre-seeded token for cached requests (no network call on first load).
-  const fetchAccessToken = async ({ forceRefreshToken }: { forceRefreshToken: boolean }) => {
+  const fetchAccessToken = async ({
+    forceRefreshToken,
+  }: {
+    forceRefreshToken: boolean
+  }) => {
     if (!forceRefreshToken) return initialToken ?? null
     try {
       const { data } = await authClient.convex.token()
