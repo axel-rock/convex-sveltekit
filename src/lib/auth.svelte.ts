@@ -10,20 +10,14 @@
  */
 import { createContext } from "svelte"
 import { getConvexClient } from "./client.svelte.js"
+import { browser } from "$app/environment"
+import type { AuthClient } from "../auth"
+import * as Sentry from "@sentry/sveltekit"
+import { identify as identifyPosthog, resetPosthog } from "$lib/helpers/posthog.js"
 
 // ============================================================================
 // Types
 // ============================================================================
-
-/** Minimal type for the Better Auth client (avoids importing the full type). */
-type AuthClient = {
-  useSession: () => {
-    subscribe: (
-      cb: (state: { data: unknown; isPending: boolean }) => void,
-    ) => (() => void) | { unsubscribe: () => void }
-  }
-  convex: { token: () => Promise<{ data: { token: string } | null }> }
-}
 
 type ConvexAuthState = {
   readonly isAuthenticated: boolean
@@ -63,9 +57,21 @@ export function setupConvexAuth({
   let convexAuthed: boolean | null = $state(null)
 
   // Subscribe to Better Auth session state
-  authClient.useSession().subscribe((session: { data: unknown; isPending: boolean }) => {
+  authClient.useSession().subscribe((session) => {
     sessionData = session.data
     sessionPending = session.isPending
+
+    if (!browser) return
+
+    if (session.data?.user) {
+      const { id, email, name } = session.data.user
+      Sentry.setUser({ id, email, username: name })
+
+      identifyPosthog(id, { email, username: name })
+    } else {
+      Sentry.setUser(null)
+      resetPosthog()
+    }
   })
 
   const hasSession = $derived(sessionData !== null)
