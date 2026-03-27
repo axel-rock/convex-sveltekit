@@ -8,7 +8,9 @@
  */
 import { ConvexHttpClient } from "convex/browser"
 import type { FunctionReference, FunctionArgs, FunctionReturnType } from "convex/server"
+import type { RequestEvent } from "@sveltejs/kit"
 import { getConvexUrl } from "./client.svelte.js"
+import { refreshJwtFromSession } from "$lib/api/auth.server.js"
 
 let _httpClient: ConvexHttpClient | null = null
 
@@ -20,21 +22,61 @@ function getUnauthenticatedClient(): ConvexHttpClient {
   return _httpClient
 }
 
-/**
- * Get auth token from the current SvelteKit request context.
- * Uses dynamic import() — $app/server is a Vite virtual module, require() won't resolve it.
- */
-async function getTokenFromRequest(): Promise<string | null> {
+/** Get current request event when available (SSR/server request context only). */
+async function getRequestEvent(): Promise<RequestEvent | null> {
   try {
     const { getRequestEvent } = await import("$app/server")
-    const event = getRequestEvent()
-    return event?.locals?.convexToken ?? null
+    return getRequestEvent() ?? null
   } catch {
     return null
   }
 }
 
-/** Get an auth-aware HTTP client for the current request. */
+function parseJwtExpMs(token: string): number | null {
+  const parts = token.split(".")
+  const payloadPart = parts.at(1)
+  if (!payloadPart) return null
+
+  try {
+    const base64 = payloadPart.replace(/-/g, "+").replace(/_/g, "/")
+    const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=")
+    const payloadJson = atob(padded)
+    const payload = JSON.parse(payloadJson) as { exp?: unknown }
+
+    if (typeof payload.exp !== "number" || !Number.isFinite(payload.exp)) {
+      return null
+    }
+
+    return payload.exp * 1000
+  } catch {
+    return null
+  }
+}
+
+function shouldRefreshToken(token: string): boolean {
+  const expMs = parseJwtExpMs(token)
+  if (expMs === null) return false
+
+  return Date.now() >= expMs - 60_000
+}
+
+async function getTokenFromRequest(): Promise<string | null> {
+  const event = await getRequestEvent()
+  const token = event?.locals.convexToken
+
+  if (token && shouldRefreshToken(token)) {
+    const refreshedToken = await refreshJwtFromSession(event)
+    if (refreshedToken) {
+      return refreshedToken
+    } else {
+      console.error("[convex/server] failed to refresh JWT from session")
+      return null
+    }
+  }
+
+  return token ?? null
+}
+
 async function getHttpClient(): Promise<ConvexHttpClient> {
   const token = await getTokenFromRequest()
   if (token) {
@@ -42,6 +84,7 @@ async function getHttpClient(): Promise<ConvexHttpClient> {
     client.setAuth(token)
     return client
   }
+
   return getUnauthenticatedClient()
 }
 
