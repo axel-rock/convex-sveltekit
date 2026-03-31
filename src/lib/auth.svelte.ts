@@ -55,6 +55,7 @@ export function setupConvexAuth({
   let sessionData: unknown = $state(null)
   let sessionPending = $state(true)
   let convexAuthed: boolean | null = $state(null)
+  let lastIdentifiedUserId: string | null = null
 
   // Subscribe to Better Auth session state
   authClient.useSession().subscribe((session) => {
@@ -65,12 +66,16 @@ export function setupConvexAuth({
 
     if (session.data?.user) {
       const { id, email, name } = session.data.user
+      lastIdentifiedUserId = id
       Sentry.setUser({ id, email, username: name })
 
       identifyPosthog(id, { email, username: name })
     } else {
       Sentry.setUser(null)
-      resetPosthog()
+      if (!session.isPending && lastIdentifiedUserId) {
+        resetPosthog()
+        lastIdentifiedUserId = null
+      }
     }
   })
 
