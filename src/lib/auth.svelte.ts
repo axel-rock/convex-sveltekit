@@ -13,7 +13,12 @@ import { getConvexClient } from "./client.svelte.js"
 import { browser } from "$app/environment"
 import type { AuthClient } from "../auth"
 import * as Sentry from "@sentry/sveltekit"
-import { identify as identifyPosthog, resetPosthog } from "$lib/helpers/posthog.js"
+import {
+  identify as identifyPosthog,
+  resetPosthog,
+  registerImpersonation,
+  clearImpersonation,
+} from "$lib/helpers/posthog.js"
 
 // ============================================================================
 // Types
@@ -70,6 +75,10 @@ export function setupConvexAuth({
       Sentry.setUser({ id, email, username: name })
 
       identifyPosthog(id, { email, username: name })
+
+      const impersonatedBy = session.data.session?.impersonatedBy ?? null
+      if (impersonatedBy) registerImpersonation(impersonatedBy)
+      else clearImpersonation()
     } else {
       Sentry.setUser(null)
       if (!session.isPending && lastIdentifiedUserId) {
