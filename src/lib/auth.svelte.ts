@@ -47,13 +47,25 @@ const [getAuthCtx, setAuthCtx] = createContext<ConvexAuthState>()
  * immediately — before the WebSocket connects and before any $effect runs.
  * This eliminates the `authClient.convex.token()` HTTP call on first load
  * and prevents unauthenticated subscriptions from overwriting SSR data.
+ *
+ * `hasServerUser` is a reactive getter that returns `true` iff the layout's
+ * server-side load returned a user (cookies present and verified). It's the
+ * authoritative "did the server say I'm signed in?" signal — we use it to
+ * tear down the WebSocket when the sign-out form clears cookies without
+ * waiting on BA's `useSession()` cache to notice. BA's nanostore only
+ * auto-refreshes on window focus and a fixed interval, so without this
+ * server-driven signal the WebSocket would stay authenticated across an
+ * SPA sign-out and the live `getCurrentUser` query would keep streaming
+ * the just-signed-out user.
  */
 export function setupConvexAuth({
   authClient,
   initialToken,
+  hasServerUser,
 }: {
   authClient: AuthClient
   initialToken?: string | null
+  hasServerUser: () => boolean
 }) {
   const client = getConvexClient()
 
@@ -88,12 +100,16 @@ export function setupConvexAuth({
     }
   })
 
+  const serverSignedIn = $derived(hasServerUser())
   const hasSession = $derived(sessionData !== null)
 
   const isAuthenticated = $derived(
-    (!!initialToken && convexAuthed === null) || (hasSession && (convexAuthed ?? false)),
+    (!!initialToken && convexAuthed === null) ||
+      (serverSignedIn && hasSession && (convexAuthed ?? false)),
   )
-  const isLoading = $derived(sessionPending || (hasSession && convexAuthed === null))
+  const isLoading = $derived(
+    serverSignedIn && (sessionPending || (hasSession && convexAuthed === null)),
+  )
 
   // Fetch a Convex-compatible JWT from Better Auth.
   // Returns pre-seeded token for cached requests (no network call on first load).
@@ -115,12 +131,24 @@ export function setupConvexAuth({
     })
   }
 
-  // Sync auth state: set/clear Convex auth when session changes.
-  // When initialToken was provided, don't clear auth while session is still loading.
+  // Sync auth state. The server is the source of truth for "am I signed in?".
+  //
+  //   - serverSignedIn === false → cookies are gone (sign-out, org-switch
+  //     mid-mint, etc.). Clear auth even if BA's stale nanostore still
+  //     reports a session. This is what makes `<form {...signOut}>` work
+  //     without a custom JS handler: when invalidateAll runs and the layout
+  //     loader returns `user: null`, the next render flips this flag and
+  //     the WebSocket detaches in the same tick.
+  //   - serverSignedIn === true and BA reports a session → set auth.
+  //   - serverSignedIn === true but BA still pending → wait, don't touch
+  //     the pre-authenticated WebSocket (avoids a flicker on first load).
   $effect(() => {
     let active = true
 
-    if (hasSession) {
+    if (!serverSignedIn) {
+      client.client.clearAuth()
+      convexAuthed = null
+    } else if (hasSession) {
       client.setAuth(fetchAccessToken, (isAuthed: boolean) => {
         if (active) convexAuthed = isAuthed
       })
