@@ -11,14 +11,15 @@
 import { createContext } from "svelte"
 import { getConvexClient } from "./client.svelte.js"
 import { browser } from "$app/environment"
-import type { AuthClient } from "../auth"
+import type { AuthClient } from "$lib/auth/client"
 import * as Sentry from "@sentry/sveltekit"
 import {
   identify as identifyPosthog,
   resetPosthog,
   registerImpersonation,
   clearImpersonation,
-} from "$lib/helpers/posthog.js"
+  setOrganizationGroup,
+} from "$lib/analytics/posthog.js"
 
 // ============================================================================
 // Types
@@ -62,10 +63,13 @@ export function setupConvexAuth({
   authClient,
   initialToken,
   hasServerUser,
+  activeOrganizationId,
 }: {
   authClient: AuthClient
   initialToken?: string | null
   hasServerUser: () => boolean
+  /** Server-verified active org id (layout data) — PostHog group analytics. */
+  activeOrganizationId?: () => string | null
 }) {
   const client = getConvexClient()
 
@@ -87,6 +91,11 @@ export function setupConvexAuth({
       Sentry.setUser({ id, email, username: name })
 
       identifyPosthog(id, { email, username: name })
+
+      // Group after identify so this session's events roll up to the org.
+      // Org switches force a full reload (JWT re-mint), which re-runs this.
+      const organizationId = activeOrganizationId?.() ?? null
+      if (organizationId) setOrganizationGroup(organizationId)
 
       const impersonatedBy = session.data.session?.impersonatedBy ?? null
       if (impersonatedBy) registerImpersonation(impersonatedBy)

@@ -10,7 +10,7 @@ import { ConvexHttpClient } from "convex/browser"
 import type { FunctionReference, FunctionArgs, FunctionReturnType } from "convex/server"
 import type { RequestEvent } from "@sveltejs/kit"
 import { getConvexUrl } from "./client.svelte.js"
-import { refreshJwtFromSession } from "$lib/api/auth.server.js"
+import { refreshJwtFromSession } from "$lib/auth/session.server.js"
 
 let _httpClient: ConvexHttpClient | null = null
 
@@ -110,4 +110,42 @@ export async function serverAction<Action extends FunctionReference<"action">>(
   args: FunctionArgs<Action>,
 ): Promise<FunctionReturnType<Action>> {
   return (await getHttpClient()).action(ref, args)
+}
+
+/**
+ * One-shot client authenticated with an EXPLICIT JWT instead of the ambient
+ * request context. For code with no request — chiefly durable workflow steps
+ * (the chat tools) acting as the launching user, whose token is threaded in.
+ */
+function clientWithToken(token: string | null): ConvexHttpClient {
+  const client = new ConvexHttpClient(getConvexUrl())
+  if (token) client.setAuth(token)
+  return client
+}
+
+/** Like {@link serverQuery} but authenticated with an explicit JWT. */
+export async function serverQueryAs<Query extends FunctionReference<"query">>(
+  token: string | null,
+  ref: Query,
+  args: FunctionArgs<Query>,
+): Promise<FunctionReturnType<Query>> {
+  return clientWithToken(token).query(ref, args)
+}
+
+/** Like {@link serverMutation} but authenticated with an explicit JWT. */
+export async function serverMutationAs<Mutation extends FunctionReference<"mutation">>(
+  token: string | null,
+  ref: Mutation,
+  args: FunctionArgs<Mutation>,
+): Promise<FunctionReturnType<Mutation>> {
+  return clientWithToken(token).mutation(ref, args)
+}
+
+/** Like {@link serverAction} but authenticated with an explicit JWT. */
+export async function serverActionAs<Action extends FunctionReference<"action">>(
+  token: string | null,
+  ref: Action,
+  args: FunctionArgs<Action>,
+): Promise<FunctionReturnType<Action>> {
+  return clientWithToken(token).action(ref, args)
 }
