@@ -122,14 +122,23 @@ export function setupConvexAuth({
 
   // Fetch a Convex-compatible JWT from Better Auth.
   // Returns pre-seeded token for cached requests (no network call on first load).
+  // The better-auth client aborts superseded token requests when session
+  // refreshes overlap (the post-login invalidation storm fires several), and
+  // an abort used to read as a silent null: the WebSocket stayed
+  // unauthenticated and isAuthenticated never flipped. Retry through the
+  // storm; ponytail: 5 tries at 300ms bounds it.
   const fetchAccessToken = async ({ forceRefreshToken }: { forceRefreshToken: boolean }) => {
     if (!forceRefreshToken) return initialToken ?? null
-    try {
-      const { data } = await authClient.convex.token()
-      return data?.token ?? null
-    } catch {
-      return null
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        const { data } = await authClient.convex.token()
+        if (data?.token) return data.token
+      } catch {
+        // Aborted by a concurrent session refresh; the next try usually lands.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300))
     }
+    return null
   }
 
   // Pre-authenticate immediately — runs synchronously during component init,
