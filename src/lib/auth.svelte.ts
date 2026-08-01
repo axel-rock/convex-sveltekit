@@ -96,12 +96,16 @@ export function setupConvexAuth({
       // Org switches force a full reload (JWT re-mint), which re-runs this.
       const organizationId = activeOrganizationId?.() ?? null
       if (organizationId) setOrganizationGroup(organizationId)
+      // Same org id on Sentry so errors group by workspace (#578). Cleared
+      // with the user below on sign-out.
+      Sentry.setTag("organization_id", organizationId ?? undefined)
 
       const impersonatedBy = session.data.session?.impersonatedBy ?? null
       if (impersonatedBy) registerImpersonation(impersonatedBy)
       else clearImpersonation()
     } else {
       Sentry.setUser(null)
+      Sentry.setTag("organization_id", undefined)
       if (!session.isPending && lastIdentifiedUserId) {
         resetPosthog()
         lastIdentifiedUserId = null
