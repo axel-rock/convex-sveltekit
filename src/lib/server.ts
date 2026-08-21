@@ -10,6 +10,7 @@ import { ConvexHttpClient } from "convex/browser"
 import type { FunctionReference, FunctionArgs, FunctionReturnType } from "convex/server"
 import type { RequestEvent } from "@sveltejs/kit"
 import { getConvexUrl } from "./client.svelte.js"
+import { selectLiveConvexToken } from "$lib/auth/convex-session-token"
 import { refreshJwtFromSession } from "$lib/auth/session.server.js"
 
 let _httpClient: ConvexHttpClient | null = null
@@ -32,49 +33,26 @@ async function getRequestEvent(): Promise<RequestEvent | null> {
   }
 }
 
-function parseJwtExpMs(token: string): number | null {
-  const parts = token.split(".")
-  const payloadPart = parts.at(1)
-  if (!payloadPart) return null
-
-  try {
-    const base64 = payloadPart.replace(/-/g, "+").replace(/_/g, "/")
-    const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=")
-    const payloadJson = atob(padded)
-    const payload = JSON.parse(payloadJson) as { exp?: unknown }
-
-    if (typeof payload.exp !== "number" || !Number.isFinite(payload.exp)) {
-      return null
-    }
-
-    return payload.exp * 1000
-  } catch {
-    return null
-  }
-}
-
-function shouldRefreshToken(token: string): boolean {
-  const expMs = parseJwtExpMs(token)
-  if (expMs === null) return false
-
-  return Date.now() >= expMs - 60_000
+export async function resolveLiveConvexToken(explicit?: string | null): Promise<string | null> {
+  const event = await getRequestEvent()
+  return selectLiveConvexToken({
+    explicit,
+    localsToken: event?.locals.convexToken ?? null,
+    remint: async () => {
+      if (!event) return null
+      const refreshed = await refreshJwtFromSession(event)
+      if (!refreshed) {
+        console.error("[convex/server] failed to refresh JWT from session")
+        return null
+      }
+      event.locals.convexToken = refreshed
+      return refreshed
+    },
+  })
 }
 
 async function getTokenFromRequest(): Promise<string | null> {
-  const event = await getRequestEvent()
-  const token = event?.locals.convexToken
-
-  if (token && shouldRefreshToken(token)) {
-    const refreshedToken = await refreshJwtFromSession(event)
-    if (refreshedToken) {
-      return refreshedToken
-    } else {
-      console.error("[convex/server] failed to refresh JWT from session")
-      return null
-    }
-  }
-
-  return token ?? null
+  return resolveLiveConvexToken()
 }
 
 async function getHttpClient(): Promise<ConvexHttpClient> {
@@ -114,8 +92,8 @@ export async function serverAction<Action extends FunctionReference<"action">>(
 
 /**
  * One-shot client authenticated with an EXPLICIT JWT instead of the ambient
- * request context. For code with no request — chiefly durable workflow steps
- * (the chat tools) acting as the launching user, whose token is threaded in.
+ * request context. Chat tools thread the launching user's token here; session
+ * JWTs are reminted when they near expiry so a long turn stays authenticated.
  */
 function clientWithToken(token: string | null): ConvexHttpClient {
   const client = new ConvexHttpClient(getConvexUrl())
@@ -129,7 +107,7 @@ export async function serverQueryAs<Query extends FunctionReference<"query">>(
   ref: Query,
   args: FunctionArgs<Query>,
 ): Promise<FunctionReturnType<Query>> {
-  return clientWithToken(token).query(ref, args)
+  return clientWithToken(await resolveLiveConvexToken(token)).query(ref, args)
 }
 
 /** Like {@link serverMutation} but authenticated with an explicit JWT. */
@@ -138,7 +116,7 @@ export async function serverMutationAs<Mutation extends FunctionReference<"mutat
   ref: Mutation,
   args: FunctionArgs<Mutation>,
 ): Promise<FunctionReturnType<Mutation>> {
-  return clientWithToken(token).mutation(ref, args)
+  return clientWithToken(await resolveLiveConvexToken(token)).mutation(ref, args)
 }
 
 /** Like {@link serverAction} but authenticated with an explicit JWT. */
@@ -147,5 +125,5 @@ export async function serverActionAs<Action extends FunctionReference<"action">>
   ref: Action,
   args: FunctionArgs<Action>,
 ): Promise<FunctionReturnType<Action>> {
-  return clientWithToken(token).action(ref, args)
+  return clientWithToken(await resolveLiveConvexToken(token)).action(ref, args)
 }
