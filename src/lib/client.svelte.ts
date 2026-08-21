@@ -34,7 +34,13 @@ export function initConvex(url: string, options: ConvexClientOptions = {}): Conv
     throw new Error("[convex-sveltekit] initConvex requires a non-empty URL string")
   }
   _url = url
-  _client = new ConvexClient(url, { disabled: !IS_BROWSER, ...options })
+  // Self-hosted deployments use plain http(s) URLs that fail the SDK's
+  // *.convex.cloud shape check, skip it (the URL comes from our own env).
+  _client = new ConvexClient(url, {
+    disabled: !IS_BROWSER,
+    skipConvexDeploymentUrlCheck: true,
+    ...options,
+  })
   return _client
 }
 

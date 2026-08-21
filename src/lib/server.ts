@@ -18,7 +18,7 @@ let _httpClient: ConvexHttpClient | null = null
 /** Unauthenticated singleton — reused for public queries. */
 function getUnauthenticatedClient(): ConvexHttpClient {
   if (!_httpClient) {
-    _httpClient = new ConvexHttpClient(getConvexUrl())
+    _httpClient = new ConvexHttpClient(getConvexUrl(), { skipConvexDeploymentUrlCheck: true })
   }
   return _httpClient
 }
@@ -58,7 +58,7 @@ async function getTokenFromRequest(): Promise<string | null> {
 async function getHttpClient(): Promise<ConvexHttpClient> {
   const token = await getTokenFromRequest()
   if (token) {
-    const client = new ConvexHttpClient(getConvexUrl())
+    const client = new ConvexHttpClient(getConvexUrl(), { skipConvexDeploymentUrlCheck: true })
     client.setAuth(token)
     return client
   }
@@ -96,7 +96,7 @@ export async function serverAction<Action extends FunctionReference<"action">>(
  * JWTs are reminted when they near expiry so a long turn stays authenticated.
  */
 function clientWithToken(token: string | null): ConvexHttpClient {
-  const client = new ConvexHttpClient(getConvexUrl())
+  const client = new ConvexHttpClient(getConvexUrl(), { skipConvexDeploymentUrlCheck: true })
   if (token) client.setAuth(token)
   return client
 }

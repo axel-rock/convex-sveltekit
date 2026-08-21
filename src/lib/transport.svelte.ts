@@ -70,7 +70,7 @@ export async function convexLoad<Query extends FunctionReference<"query">>(
   ref: Query,
   args: FunctionArgs<Query>,
 ): Promise<ConvexQueryResult<Query>> {
-  const httpClient = new ConvexHttpClient(getConvexUrl())
+  const httpClient = new ConvexHttpClient(getConvexUrl(), { skipConvexDeploymentUrlCheck: true })
 
   if (!IS_BROWSER) {
     // Server-side: set auth token if available
