@@ -28,6 +28,7 @@ import { getConvexClient } from "./client.svelte.js"
 export type ConvexUserData = {
   id: string
   email: string
+  emailVerified?: boolean
   name: string
   image?: string | null
   isAnonymous?: boolean
@@ -87,7 +88,9 @@ export function encodeConvexUser(value: unknown): false | { data: Record<string,
   ) {
     // Strip the marker — serialize only the user fields
     const data: Record<string, unknown> = {}
-    for (const [key, entry] of Object.entries(value as ConvexUserResult & Record<string, unknown>)) {
+    for (const [key, entry] of Object.entries(
+      value as ConvexUserResult & Record<string, unknown>,
+    )) {
       if (key !== "__convexUser") data[key] = entry
     }
     return { data }
