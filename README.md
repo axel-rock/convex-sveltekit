@@ -1,3 +1,5 @@
+
+
 # convex-sveltekit
 
 [![npm](https://img.shields.io/npm/v/convex-sveltekit)](https://www.npmjs.com/package/convex-sveltekit)
@@ -222,7 +224,7 @@ import { initConvex } from "convex-sveltekit"
 import { PUBLIC_CONVEX_URL } from "$env/static/public"
 
 initConvex(PUBLIC_CONVEX_URL)
-// With auth: initConvex(PUBLIC_CONVEX_URL, {}, initialToken)
+// (Auth tokens are wired later in the layout via setupConvexAuth)
 ```
 
 If you use `convexLoad()` or `serverQuery()` in load functions, also add a server hook:
