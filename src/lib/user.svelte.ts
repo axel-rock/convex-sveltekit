@@ -19,6 +19,7 @@
  */
 import type { FunctionReference, FunctionArgs } from "convex/server"
 import { getConvexClient } from "./client.svelte.js"
+import { createSubscriber } from "svelte/reactivity"
 
 // ============================================================================
 // Types
@@ -118,21 +119,21 @@ export function decodeConvexUser<Query extends FunctionReference<"query">>(
 
   const client = getConvexClient()
 
-  if (!client.disabled) {
-    client.onUpdate(
+  const subscribe = createSubscriber(() => {
+    if (client.disabled) return
+    let version = 0
+    const unsubscribe = client.onUpdate(
       queryRef,
       args,
       (result: ConvexUserData | null) => {
         if (result === null) return // ignore unauthenticated subscription result
+        const receivedVersion = ++version
 
         // Preload new image before updating state to prevent flicker
         if (result.image && result.image !== current.image) {
           const img = new Image()
-          img.onload = () => {
-            current = result
-          }
-          img.onerror = () => {
-            current = result
+          img.onload = img.onerror = () => {
+            if (receivedVersion === version) current = result
           }
           img.src = result.image
         } else {
@@ -143,21 +144,29 @@ export function decodeConvexUser<Query extends FunctionReference<"query">>(
         // Query error — keep showing JWT data, don't crash
       },
     )
-  }
+    return () => {
+      version++
+      unsubscribe()
+    }
+  })
 
   // Expose the live user as a raw-ish object so new JWT fields flow through
   // without whitelisting every property here.
   return new Proxy({} as ConvexUserData, {
     get(_target: ConvexUserData, prop: PropertyKey) {
+      subscribe()
       return (current as Record<PropertyKey, unknown>)[prop]
     },
     has(_target: ConvexUserData, prop: PropertyKey) {
+      subscribe()
       return prop in (current as Record<PropertyKey, unknown>)
     },
     ownKeys() {
+      subscribe()
       return Reflect.ownKeys(current as Record<PropertyKey, unknown>)
     },
     getOwnPropertyDescriptor(_target: ConvexUserData, prop: PropertyKey) {
+      subscribe()
       const record = current as Record<PropertyKey, unknown>
       if (!(prop in record)) return undefined
       return {

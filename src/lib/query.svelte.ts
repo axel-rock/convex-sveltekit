@@ -14,6 +14,7 @@ import type { FunctionReference, FunctionReturnType, FunctionArgs } from "convex
 import { getFunctionName } from "convex/server"
 import { convexToJson } from "convex/values"
 import { getConvexClient } from "./client.svelte.js"
+import { createSubscriber } from "svelte/reactivity"
 
 // ============================================================================
 // Types
@@ -22,9 +23,7 @@ import { getConvexClient } from "./client.svelte.js"
 type Skip = typeof SKIP
 
 type ArgsOrSkip<Query extends FunctionReference<"query">> =
-  | FunctionArgs<Query>
-  | "skip"
-  | (() => FunctionArgs<Query> | "skip")
+  FunctionArgs<Query> | "skip" | (() => FunctionArgs<Query> | "skip")
 
 interface ConvexQueryOptions<Query extends FunctionReference<"query">> {
   initialData?: FunctionReturnType<Query>
@@ -298,9 +297,8 @@ export function convexQuery<Query extends FunctionReference<"query">>(
 // ============================================================================
 
 /**
- * Create a live Convex subscription without $effect (no component context needed).
- * Used by transport.decode and convexLoad() on client-side navigation.
- * Subscription lives until the ConvexClient is closed.
+ * Seed a query outside component context, subscribing while rendered consumers
+ * read it. Used by transport.decode and convexLoad() on client-side navigation.
  */
 export function createDetachedQuery<Query extends FunctionReference<"query">>(
   query: Query,
@@ -316,13 +314,16 @@ export function createDetachedQuery<Query extends FunctionReference<"query">>(
   let manualOverride: FunctionReturnType<Query> | undefined = $state(undefined)
   let hasManualOverride: boolean = $state(false)
 
-  // Direct subscription — no $effect needed
-  if (!client.disabled) {
-    client.onUpdate(
+  // Transport decoding also runs for preloaded pages. Subscribe only while
+  // rendered consumers read this result, and release it when they leave.
+  const subscribe = createSubscriber(() => {
+    if (client.disabled) return
+    return client.onUpdate(
       query,
       args,
       (result: FunctionReturnType<Query>) => {
         data = structuredClone(result)
+        error = undefined
         hasManualOverride = false
       },
       (e: Error) => {
@@ -330,17 +331,20 @@ export function createDetachedQuery<Query extends FunctionReference<"query">>(
         hasManualOverride = false
       },
     )
-  }
+  })
 
   return {
     get data() {
+      subscribe()
       if (hasManualOverride) return manualOverride
       return data
     },
     get isLoading() {
+      subscribe()
       return error === undefined && data === undefined
     },
     get error() {
+      subscribe()
       return error
     },
     get isStale() {
@@ -353,6 +357,7 @@ export function createDetachedQuery<Query extends FunctionReference<"query">>(
       return this.isLoading
     },
     get ready() {
+      subscribe()
       return data !== undefined
     },
     set(value: FunctionReturnType<Query>) {

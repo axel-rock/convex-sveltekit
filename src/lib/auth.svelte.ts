@@ -8,10 +8,11 @@
  * Pass `initialToken` from SSR to pre-authenticate the WebSocket before subscriptions fire.
  * Read auth state anywhere via `useConvexAuth()`.
  */
-import { createContext } from "svelte"
+import { createContext, onDestroy } from "svelte"
 import { getConvexClient } from "./client.svelte.js"
 import { browser } from "$app/environment"
 import type { AuthClient } from "$lib/auth/client"
+import type { ConvexClient } from "convex/browser"
 import * as Sentry from "@sentry/sveltekit"
 import {
   identify as identifyPosthog,
@@ -41,23 +42,9 @@ const [getAuthCtx, setAuthCtx] = createContext<ConvexAuthState>()
 // ============================================================================
 
 /**
- * Wire Better Auth into the Convex client.
- * Must be called during component init (root layout), after `setupConvex()`.
- *
- * When `initialToken` is provided (from SSR), the ConvexClient authenticates
- * immediately — before the WebSocket connects and before any $effect runs.
- * This eliminates the `authClient.convex.token()` HTTP call on first load
- * and prevents unauthenticated subscriptions from overwriting SSR data.
- *
- * `hasServerUser` is a reactive getter that returns `true` iff the layout's
- * server-side load returned a user (cookies present and verified). It's the
- * authoritative "did the server say I'm signed in?" signal — we use it to
- * tear down the WebSocket when the sign-out form clears cookies without
- * waiting on BA's `useSession()` cache to notice. BA's nanostore only
- * auto-refreshes on window focus and a fixed interval, so without this
- * server-driven signal the WebSocket would stay authenticated across an
- * SPA sign-out and the live `getCurrentUser` query would keep streaming
- * the just-signed-out user.
+ * Authenticate the shared Convex client from verified layout data, including
+ * tokens returned after client-side sign-in. Better Auth's session subscription
+ * supplies analytics identity; it does not delay the WebSocket handshake.
  */
 export function setupConvexAuth({
   authClient,
@@ -66,26 +53,23 @@ export function setupConvexAuth({
   activeOrganizationId,
 }: {
   authClient: AuthClient
-  initialToken?: string | null
+  initialToken: () => string | null
   hasServerUser: () => boolean
   /** Server-verified active org id (layout data) — PostHog group analytics. */
   activeOrganizationId?: () => string | null
 }) {
   const client = getConvexClient()
 
-  let sessionData: unknown = $state(null)
-  let sessionPending = $state(true)
   let convexAuthed: boolean | null = $state(null)
+  let missingSessionToken = $state<string | null | undefined>(undefined)
   let lastIdentifiedUserId: string | null = null
 
   // Subscribe to Better Auth session state
-  authClient.useSession().subscribe((session) => {
-    sessionData = session.data
-    sessionPending = session.isPending
-
+  const unsubscribe = authClient.useSession().subscribe((session) => {
     if (!browser) return
 
     if (session.data?.user) {
+      missingSessionToken = undefined
       const { id, email, name } = session.data.user
       lastIdentifiedUserId = id
       Sentry.setUser({ id, email, username: name })
@@ -104,6 +88,9 @@ export function setupConvexAuth({
       if (impersonatedBy) registerImpersonation(impersonatedBy)
       else clearImpersonation()
     } else {
+      // A confirmed missing session still revokes browser access. A later
+      // sign-in's new layout token can authenticate without waiting for BA.
+      if (!session.isPending) missingSessionToken = initialToken()
       Sentry.setUser(null)
       Sentry.setTag("organization_id", undefined)
       if (!session.isPending && lastIdentifiedUserId) {
@@ -113,76 +100,23 @@ export function setupConvexAuth({
     }
   })
 
+  onDestroy(unsubscribe)
+
   const serverSignedIn = $derived(hasServerUser())
-  const hasSession = $derived(sessionData !== null)
-
-  const isAuthenticated = $derived(
-    (!!initialToken && convexAuthed === null) ||
-      (serverSignedIn && hasSession && (convexAuthed ?? false)),
+  const serverToken = $derived(
+    serverSignedIn && initialToken() !== missingSessionToken ? initialToken() : null,
   )
-  const isLoading = $derived(
-    serverSignedIn && (sessionPending || (hasSession && convexAuthed === null)),
-  )
+  const isAuthenticated = $derived(!!serverToken && convexAuthed !== false)
+  const isLoading = $derived(!!serverToken && convexAuthed === null)
 
-  // Fetch a Convex-compatible JWT from Better Auth.
-  // Returns pre-seeded token for cached requests (no network call on first load).
-  // The better-auth client aborts superseded token requests when session
-  // refreshes overlap (the post-login invalidation storm fires several), and
-  // an abort used to read as a silent null: the WebSocket stayed
-  // unauthenticated and isAuthenticated never flipped. Retry through the
-  // storm; ponytail: 5 tries at 300ms bounds it.
-  const fetchAccessToken = async ({ forceRefreshToken }: { forceRefreshToken: boolean }) => {
-    if (!forceRefreshToken) return initialToken ?? null
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        const { data } = await authClient.convex.token()
-        if (data?.token) return data.token
-      } catch {
-        // Aborted by a concurrent session refresh; the next try usually lands.
-      }
-      await new Promise((resolve) => setTimeout(resolve, 300))
-    }
-    return null
-  }
-
-  // Pre-authenticate immediately — runs synchronously during component init,
-  // before any $effect, before the WebSocket finishes connecting.
-  if (initialToken) {
-    client.setAuth(fetchAccessToken, (isAuthed: boolean) => {
-      convexAuthed = isAuthed
-    })
-  }
-
-  // Sync auth state. The server is the source of truth for "am I signed in?".
-  //
-  //   - serverSignedIn === false → cookies are gone (sign-out, org-switch
-  //     mid-mint, etc.). Clear auth even if BA's stale nanostore still
-  //     reports a session. This is what makes `<form {...signOut}>` work
-  //     without a custom JS handler: when invalidateAll runs and the layout
-  //     loader returns `user: null`, the next render flips this flag and
-  //     the WebSocket detaches in the same tick.
-  //   - serverSignedIn === true and BA reports a session → set auth.
-  //   - serverSignedIn === true but BA still pending → wait, don't touch
-  //     the pre-authenticated WebSocket (avoids a flicker on first load).
-  $effect(() => {
-    let active = true
-
-    if (!serverSignedIn) {
-      client.client.clearAuth()
-      convexAuthed = null
-    } else if (hasSession) {
-      client.setAuth(fetchAccessToken, (isAuthed: boolean) => {
-        if (active) convexAuthed = isAuthed
-      })
-    } else if (!sessionPending) {
-      client.client.clearAuth()
-      convexAuthed = null
-    }
-
-    return () => {
-      active = false
-    }
+  const syncAuthentication = createAuthBridge(client, authClient, (authenticated) => {
+    convexAuthed = authenticated
   })
+  const syncServerAuthentication = () => syncAuthentication(serverToken)
+  if (browser) syncServerAuthentication()
+  // Layout invalidation is the source of verified identity changes, including
+  // sign-out. The external client needs an imperative update only on that change.
+  $effect(syncServerAuthentication)
 
   setAuthCtx({
     get isAuthenticated() {
@@ -192,6 +126,44 @@ export function setupConvexAuth({
       return isLoading
     },
   })
+}
+
+/** Reuse verified tokens and ignore completions from an identity that has changed. */
+export function createAuthBridge(
+  client: Pick<ConvexClient, "setAuth" | "client">,
+  authClient: Pick<AuthClient, "convex">,
+  onChange: (authenticated: boolean | null) => void,
+) {
+  let configuredToken: string | null | undefined
+  let generation = 0
+  return (token: string | null) => {
+    if (token === configuredToken) return
+    configuredToken = token
+    const currentGeneration = ++generation
+    onChange(null)
+    if (!token) {
+      client.client.clearAuth()
+      return
+    }
+
+    // SvelteKit returns this token after email sign-in too. Convex can use it
+    // immediately and owns the subsequent refresh when it expires.
+    client.setAuth(
+      async ({ forceRefreshToken }) => {
+        if (currentGeneration !== generation) return null
+        if (!forceRefreshToken) return token
+        try {
+          const { data } = await authClient.convex.token()
+          return currentGeneration === generation ? (data?.token ?? null) : null
+        } catch {
+          return null
+        }
+      },
+      (authenticated) => {
+        if (currentGeneration === generation) onChange(authenticated)
+      },
+    )
+  }
 }
 
 // ============================================================================

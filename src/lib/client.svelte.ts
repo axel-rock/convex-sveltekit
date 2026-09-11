@@ -20,6 +20,7 @@ const [getConvexContext, setConvexContext] = createContext<ConvexClient>()
 
 let _client: ConvexClient | null = null
 let _url: string | null = null
+let serverToken: (() => string | null) | undefined
 
 const IS_BROWSER = typeof globalThis.document !== "undefined"
 
@@ -28,7 +29,12 @@ const IS_BROWSER = typeof globalThis.document !== "undefined"
  * Call from `hooks.client.ts` to ensure the client exists before transport.decode.
  * Idempotent — subsequent calls are no-ops.
  */
-export function initConvex(url: string, options: ConvexClientOptions = {}): ConvexClient {
+export function initConvex(
+  url: string,
+  options: ConvexClientOptions = {},
+  tokenFromRequest?: () => string | null,
+): ConvexClient {
+  if (tokenFromRequest) serverToken = tokenFromRequest
   if (_client) return _client
   if (!url || typeof url !== "string") {
     throw new Error("[convex-sveltekit] initConvex requires a non-empty URL string")
@@ -76,6 +82,11 @@ export function getConvexUrl(): string {
     throw new Error("[convex-sveltekit] URL not set. Call initConvex() first.")
   }
   return _url
+}
+
+/** Read the current request's token without importing server modules into the browser bridge. */
+export function getServerConvexToken(): string | null {
+  return serverToken?.() ?? null
 }
 
 /** Context access — works in components under setupConvex(). Typesafe. */
