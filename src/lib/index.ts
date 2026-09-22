@@ -16,6 +16,8 @@ export { convexForm, type ConvexForm } from "./form.svelte.js"
 // Programmatic mutations/actions (SvelteKit RemoteCommand-compatible)
 export { convexCommand, type ConvexCommand } from "./command.svelte.js"
 
+export { convexErrorMessage } from "./error.js"
+
 // SSR bridge
 export {
   convexLoad,
