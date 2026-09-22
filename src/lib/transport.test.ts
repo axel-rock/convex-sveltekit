@@ -10,6 +10,7 @@ const { client } = vi.hoisted(() => ({
     disabled: false,
     onUpdate: vi.fn(),
     query: vi.fn(),
+    client: { localQueryResult: vi.fn() },
   },
 }))
 
@@ -27,7 +28,7 @@ vi.mock("svelte/reactivity", async () => {
 
 import { createDetachedQuery } from "./query.svelte"
 import { decodeConvexUser } from "./user.svelte"
-import { convexLoad } from "./transport.svelte"
+import { convexLoad, decodeConvexLoad } from "./transport.svelte"
 
 const query = makeFunctionReference<"query", Record<string, never>, string>("test:current")
 const cleanup: Array<() => void> = []
@@ -37,6 +38,7 @@ afterEach(async () => {
   await Promise.resolve()
   client.onUpdate.mockReset()
   client.query.mockReset()
+  client.client.localQueryResult.mockReset()
   client.disabled = false
 })
 
@@ -89,9 +91,10 @@ describe("page subscription lifetime", () => {
   })
 
   it("uses the authenticated client and its cached result on navigation", async () => {
-    client.query.mockResolvedValue("cached value")
+    client.client.localQueryResult.mockReturnValue("cached value")
     const result = await convexLoad(query, {})
-    expect(client.query).toHaveBeenCalledWith(query, {})
+    expect(client.client.localQueryResult).toHaveBeenCalledWith("test:current", {})
+    expect(client.query).not.toHaveBeenCalled()
     expect(result.data).toBe("cached value")
     expect(client.onUpdate).not.toHaveBeenCalled()
   })
@@ -114,4 +117,36 @@ it("reads each server request's token without retaining another user's identity"
   await expect(firstRequest).resolves.toBe("first-user-token")
   await expect(secondRequest).resolves.toBe("second-user-token")
   expect(getServerConvexToken()).toBeNull()
+})
+
+describe("billing navigation authentication", () => {
+  it("recovers when authentication arrives after the checkout return loads", async () => {
+    // 58c84b78a awaited an anonymous request before layout auth could mount.
+    client.client.localQueryResult.mockImplementation(() => {
+      throw new Error("Unauthenticated")
+    })
+    const result = await convexLoad(query, {})
+    expect(client.query).not.toHaveBeenCalled()
+    expect(result.isLoading).toBe(true)
+    const stop = observe(() => result.data)
+    const [, , receive, fail] = client.onUpdate.mock.lastCall!
+    fail(new Error("Unauthenticated"))
+    expect(result.error?.message).toBe("Unauthenticated")
+    receive("authenticated billing")
+    expect(result.data).toBe("authenticated billing")
+    expect(result.error).toBeUndefined()
+    expect(result.isLoading).toBe(false)
+    stop()
+  })
+
+  it("removes a hydrated billing value when access is revoked", () => {
+    const result = decodeConvexLoad({ refName: "billing:get", args: {}, data: "billing" })
+    observe(() => result.data)
+    expect(result.data).toBe("billing")
+    const [, , , fail] = client.onUpdate.mock.lastCall!
+    fail(new Error("Forbidden"))
+    expect(result.data).toBeUndefined()
+    expect(result.error?.message).toBe("Forbidden")
+    expect(result.isLoading).toBe(false)
+  })
 })

@@ -51,9 +51,18 @@ export async function convexLoad<Query extends FunctionReference<"query">>(
   args: FunctionArgs<Query>,
 ): Promise<ConvexQueryResult<Query>> {
   if (browser) {
-    // Reuse the authenticated WebSocket and its cached result. A fresh HTTP
-    // client loses auth and repeats a read already held by a live subscription.
-    const initialData = await getConvexClient().query(ref, args)
+    // A universal load can run before layout auth mounts. Reuse a cached value
+    // without awaiting an anonymous request; the rendered subscription recovers
+    // when auth arrives and is released when the page leaves.
+    const client = getConvexClient()
+    let initialData
+    try {
+      initialData = client.disabled
+        ? undefined
+        : client.client.localQueryResult(getFunctionName(ref), args)
+    } catch {
+      // A cached auth error must be retried by the live subscription.
+    }
     return createDetachedQuery(ref, args, initialData) as ConvexQueryResult<Query>
   }
 

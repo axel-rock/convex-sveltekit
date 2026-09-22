@@ -327,6 +327,7 @@ export function createDetachedQuery<Query extends FunctionReference<"query">>(
         hasManualOverride = false
       },
       (e: Error) => {
+        data = undefined
         error = e
         hasManualOverride = false
       },
