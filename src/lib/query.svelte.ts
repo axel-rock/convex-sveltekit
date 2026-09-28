@@ -28,6 +28,8 @@ type ArgsOrSkip<Query extends FunctionReference<"query">> =
 interface ConvexQueryOptions<Query extends FunctionReference<"query">> {
   initialData?: FunctionReturnType<Query>
   keepPreviousData?: boolean
+  /** Called once when the query first receives data, including cached data. */
+  onFirstResult?: (durationMs: number) => void
 }
 
 /** Reactive query result — superset of convex-svelte's shape + SvelteKit RemoteQuery compat */
@@ -115,6 +117,7 @@ export function convexQuery<Query extends FunctionReference<"query">>(
     hasManualOverride: false,
     refreshCounter: 0,
   })
+  let firstResultReported = false
 
   // --- subscription effect ---
   $effect(() => {
@@ -127,6 +130,7 @@ export function convexQuery<Query extends FunctionReference<"query">>(
       state.argsForLastResult = SKIP
       return
     }
+    const startedAt = performance.now()
 
     const unsubscribe = client.onUpdate(
       query,
@@ -138,6 +142,10 @@ export function convexQuery<Query extends FunctionReference<"query">>(
         state.lastResult = copy
         // Clear manual override when server data arrives
         state.hasManualOverride = false
+        if (!firstResultReported) {
+          firstResultReported = true
+          parseOptions(options).onFirstResult?.(performance.now() - startedAt)
+        }
       },
       (e: Error) => {
         state.result = e
