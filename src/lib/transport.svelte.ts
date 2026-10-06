@@ -2,15 +2,21 @@
  * SSR bridge — convexLoad() + transport encode/decode.
  *
  * On the server, convexLoad fetches via ConvexHttpClient (auth-aware).
- * On the client, transport.decode upgrades it to a live subscription.
+ * On the client, transport.decode (server loads) or the hydration script
+ * (universal loads) seeds a live subscription with that result.
  * On client-side navigation, convexLoad creates a live subscription directly.
  */
-import type { FunctionReference, FunctionArgs } from "convex/server"
+import type { FunctionReference, FunctionArgs, FunctionReturnType } from "convex/server"
 import { getFunctionName, makeFunctionReference } from "convex/server"
-import { ConvexHttpClient } from "convex/browser"
+import { ConvexHttpClient, type ConvexClient } from "convex/browser"
 import { browser } from "$app/environment"
 import { getConvexClient, getConvexUrl, getServerConvexToken } from "./client.svelte.js"
-import { createDetachedQuery, type ConvexQueryResult } from "./query.svelte.js"
+import { forgetServerQuery, hydratedQueryResult, recordServerQuery } from "./hydration.js"
+import {
+  createDetachedQuery,
+  WARM_SUBSCRIPTION_MS,
+  type ConvexQueryResult,
+} from "./query.svelte.js"
 
 // ============================================================================
 // ConvexLoadResult — the serializable container
@@ -35,9 +41,11 @@ export class ConvexLoadResult<T = unknown> {
  * Fetch Convex data for use in load functions. Smart about where it runs:
  *
  * - **Server (SSR):** fetches via ConvexHttpClient (auth-aware), returns ConvexLoadResult.
- *   Transport hook decodes it into a live subscription on the client.
- * - **Client (navigation):** reads through the authenticated client, reusing cached
- *   data when available. The returned result subscribes while rendered.
+ *   The client seeds a live subscription with it: through the transport hook for
+ *   server loads, through the page head's hydration script for universal loads.
+ * - **Client (navigation):** reuses cached data when available, otherwise
+ *   (`waitForData`) waits for the first value of a subscription it keeps open a
+ *   few seconds for the page to join. The returned result subscribes while rendered.
  *
  * ```ts
  * // +page.ts
@@ -49,19 +57,31 @@ export class ConvexLoadResult<T = unknown> {
 export async function convexLoad<Query extends FunctionReference<"query">>(
   ref: Query,
   args: FunctionArgs<Query>,
+  options: { waitForData?: boolean } = {},
 ): Promise<ConvexQueryResult<Query>> {
   if (browser) {
-    // A universal load can run before layout auth mounts. Reuse a cached value
-    // without awaiting an anonymous request; the rendered subscription recovers
-    // when auth arrives and is released when the page leaves.
     const client = getConvexClient()
-    let initialData
-    try {
-      initialData = client.disabled
-        ? undefined
-        : client.client.localQueryResult(getFunctionName(ref), args)
-    } catch {
-      // A cached auth error must be retried by the live subscription.
+    const name = getFunctionName(ref)
+    // Hydration reruns universal loads before layout auth mounts: the server's
+    // own result keeps its HTML on screen instead of a loading state.
+    let initialData = hydratedQueryResult(name, args)
+    if (initialData === undefined && !client.disabled) {
+      try {
+        initialData = client.client.localQueryResult(name, args)
+      } catch {
+        // A cached auth error must be retried by the live subscription.
+      }
+    }
+    // Never subscribe anonymously: the first login's layout must install
+    // authentication first. The rendered subscription recovers either way.
+    const firstValue =
+      !client.disabled &&
+      client.client.hasAuth() &&
+      globalThis.document?.body?.hasAttribute("data-hydrated")
+        ? keepWarm(client, ref, args)
+        : undefined
+    if (options.waitForData && initialData === undefined && firstValue) {
+      initialData = await firstValue
     }
     return createDetachedQuery(ref, args, initialData) as ConvexQueryResult<Query>
   }
@@ -75,11 +95,29 @@ export async function convexLoad<Query extends FunctionReference<"query">>(
   // transport.decode replaces this with a ConvexQueryResult on the client.
   const data = await httpClient.query(ref, args)
   const name = getFunctionName(ref)
-  return new ConvexLoadResult(
-    name,
-    args as Record<string, unknown>,
-    data,
-  ) as unknown as ConvexQueryResult<Query>
+  const result = new ConvexLoadResult(name, args as Record<string, unknown>, data)
+  // A universal load's result is not serialized by SvelteKit; the page head carries it.
+  recordServerQuery(result)
+  return result as unknown as ConvexQueryResult<Query>
+}
+
+/**
+ * Subscribe now and resolve with the first value. The subscription stays open
+ * for a few seconds so the page that renders this load (or the click after a
+ * hover preload) joins it instead of asking the server again.
+ */
+function keepWarm<Query extends FunctionReference<"query">>(
+  client: ConvexClient,
+  ref: Query,
+  args: FunctionArgs<Query>,
+): Promise<FunctionReturnType<Query>> {
+  const first = new Promise<FunctionReturnType<Query>>((resolve, reject) => {
+    const unsubscribe = client.onUpdate(ref, args, resolve, reject)
+    setTimeout(unsubscribe, WARM_SUBSCRIPTION_MS)
+  })
+  // A preload nobody awaits must not surface as an unhandled rejection.
+  first.catch(() => {})
+  return first
 }
 
 // ============================================================================
@@ -97,6 +135,7 @@ export function encodeConvexLoad(
     (value != null && typeof value === "object" && "__convexLoad" in value)
   ) {
     const v = value as ConvexLoadResult
+    forgetServerQuery(v)
     return { refName: v.refName, args: v.args, data: v.data }
   }
   return false

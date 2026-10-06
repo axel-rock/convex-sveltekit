@@ -305,6 +305,12 @@ export function convexQuery<Query extends FunctionReference<"query">>(
 // ============================================================================
 
 /**
+ * How long a query stays subscribed after its page stops reading it (or after
+ * a hover preload), so going back or clicking finds it in the client cache.
+ */
+export const WARM_SUBSCRIPTION_MS = 15_000
+
+/**
  * Seed a query outside component context, subscribing while rendered consumers
  * read it. Used by transport.decode and convexLoad() on client-side navigation.
  */
@@ -323,10 +329,11 @@ export function createDetachedQuery<Query extends FunctionReference<"query">>(
   let hasManualOverride: boolean = $state(false)
 
   // Transport decoding also runs for preloaded pages. Subscribe only while
-  // rendered consumers read this result, and release it when they leave.
+  // rendered consumers read this result, and release it shortly after they
+  // leave so going back to a page finds its data still cached.
   const subscribe = createSubscriber(() => {
     if (client.disabled) return
-    return client.onUpdate(
+    const unsubscribe = client.onUpdate(
       query,
       args,
       (result: FunctionReturnType<Query>) => {
@@ -340,6 +347,7 @@ export function createDetachedQuery<Query extends FunctionReference<"query">>(
         hasManualOverride = false
       },
     )
+    return () => setTimeout(unsubscribe, WARM_SUBSCRIPTION_MS)
   })
 
   return {

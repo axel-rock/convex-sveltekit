@@ -63,6 +63,17 @@ export function setupConvexAuth({
   let convexAuthed: boolean | null = $state(null)
   let missingSessionToken = $state<string | null | undefined>(undefined)
   let lastIdentifiedUserId: string | null = null
+  let taggedOrganizationId: string | null | undefined
+
+  // Same org id on PostHog (group) and Sentry (#578) so events roll up to the
+  // workspace. Group after identify; cleared with the user on sign-out.
+  function tagOrganization() {
+    const organizationId = activeOrganizationId?.() ?? null
+    if (organizationId === taggedOrganizationId) return
+    taggedOrganizationId = organizationId
+    if (organizationId) setOrganizationGroup(organizationId)
+    Sentry.setTag("organization_id", organizationId ?? undefined)
+  }
 
   // Subscribe to Better Auth session state
   const unsubscribe = authClient.useSession().subscribe((session) => {
@@ -76,13 +87,8 @@ export function setupConvexAuth({
 
       identifyPosthog(id, { email, username: name })
 
-      // Group after identify so this session's events roll up to the org.
-      // Org switches force a full reload (JWT re-mint), which re-runs this.
-      const organizationId = activeOrganizationId?.() ?? null
-      if (organizationId) setOrganizationGroup(organizationId)
-      // Same org id on Sentry so errors group by workspace (#578). Cleared
-      // with the user below on sign-out.
-      Sentry.setTag("organization_id", organizationId ?? undefined)
+      taggedOrganizationId = undefined
+      tagOrganization()
 
       const impersonatedBy = session.data.session?.impersonatedBy ?? null
       if (impersonatedBy) registerImpersonation(impersonatedBy)
@@ -93,6 +99,7 @@ export function setupConvexAuth({
       if (!session.isPending) missingSessionToken = initialToken()
       Sentry.setUser(null)
       Sentry.setTag("organization_id", undefined)
+      taggedOrganizationId = undefined
       if (!session.isPending && lastIdentifiedUserId) {
         resetPosthog()
         lastIdentifiedUserId = null
@@ -112,10 +119,14 @@ export function setupConvexAuth({
   const syncAuthentication = createAuthBridge(client, authClient, (authenticated) => {
     convexAuthed = authenticated
   })
-  const syncServerAuthentication = () => syncAuthentication(serverToken)
+  const syncServerAuthentication = () => {
+    syncAuthentication(serverToken)
+    if (lastIdentifiedUserId) tagOrganization()
+  }
   if (browser) syncServerAuthentication()
   // Layout invalidation is the source of verified identity changes, including
-  // sign-out. The external client needs an imperative update only on that change.
+  // sign-out and a first workspace created without a reload. The external
+  // clients need an imperative update only on that change.
   $effect(syncServerAuthentication)
 
   setAuthCtx({

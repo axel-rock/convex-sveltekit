@@ -8,9 +8,9 @@ import { effect_root, render_effect } from "svelte/internal/client"
 const { client } = vi.hoisted(() => ({
   client: {
     disabled: false,
-    onUpdate: vi.fn(),
+    onUpdate: vi.fn(() => vi.fn()),
     query: vi.fn(),
-    client: { localQueryResult: vi.fn() },
+    client: { localQueryResult: vi.fn(), hasAuth: vi.fn(() => true) },
   },
 }))
 
@@ -26,7 +26,7 @@ vi.mock("svelte/reactivity", async () => {
   return import(/* @vite-ignore */ entry.href)
 })
 
-import { createDetachedQuery } from "./query.svelte"
+import { createDetachedQuery, WARM_SUBSCRIPTION_MS } from "./query.svelte"
 import { decodeConvexUser } from "./user.svelte"
 import { convexLoad, decodeConvexLoad } from "./transport.svelte"
 
@@ -36,10 +36,13 @@ const cleanup: Array<() => void> = []
 afterEach(async () => {
   cleanup.splice(0).forEach((stop) => stop())
   await Promise.resolve()
-  client.onUpdate.mockReset()
+  client.onUpdate.mockReset().mockImplementation(() => vi.fn())
   client.query.mockReset()
   client.client.localQueryResult.mockReset()
+  client.client.hasAuth.mockReset().mockReturnValue(true)
   client.disabled = false
+  vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
 function observe(read: () => unknown) {
@@ -55,7 +58,8 @@ describe("page subscription lifetime", () => {
     expect(client.onUpdate).not.toHaveBeenCalled()
   })
 
-  it("releases the subscription after the last displayed consumer leaves", async () => {
+  it("keeps a page you left warm for a few seconds, then releases it", async () => {
+    vi.useFakeTimers()
     const unsubscribe = vi.fn()
     client.onUpdate.mockReturnValue(unsubscribe)
     const result = createDetachedQuery(query, {}, "server value")
@@ -64,10 +68,13 @@ describe("page subscription lifetime", () => {
     expect(client.onUpdate).toHaveBeenCalledTimes(1)
     first()
     await Promise.resolve()
-    expect(unsubscribe).not.toHaveBeenCalled()
     second()
     await Promise.resolve()
+    // Going back within the window finds the result still in the client cache.
+    vi.advanceTimersByTime(WARM_SUBSCRIPTION_MS - 1)
+    expect(unsubscribe).not.toHaveBeenCalled()
     // 7555f2c9a discarded onUpdate's disposer, retaining every visited page.
+    vi.advanceTimersByTime(1)
     expect(unsubscribe).toHaveBeenCalledOnce()
   })
 
@@ -148,5 +155,131 @@ describe("billing navigation authentication", () => {
     expect(result.data).toBeUndefined()
     expect(result.error?.message).toBe("Forbidden")
     expect(result.isLoading).toBe(false)
+  })
+})
+
+describe("thread navigation data", () => {
+  function hydratedPage() {
+    vi.stubGlobal("document", { body: { hasAttribute: () => true } })
+  }
+  /** Answer the latest subscription, the way the Convex server would. */
+  function answer(value: unknown) {
+    client.onUpdate.mock.lastCall![2](value)
+  }
+
+  it("keeps the current page until an uncached thread can render", async () => {
+    hydratedPage()
+    let settled = false
+    const loading = convexLoad(query, {}, { waitForData: true }).then((result) => {
+      settled = true
+      return result
+    })
+    await Promise.resolve()
+    // b124b774e committed the new route before requesting its thread data.
+    expect(settled).toBe(false)
+    answer("authorized conversation")
+    expect((await loading).data).toBe("authorized conversation")
+  })
+
+  it("reuses a cached thread without waiting for the server", async () => {
+    hydratedPage()
+    client.client.localQueryResult.mockReturnValue("cached conversation")
+    expect((await convexLoad(query, {}, { waitForData: true })).data).toBe("cached conversation")
+    expect(client.query).not.toHaveBeenCalled()
+  })
+
+  it("still lets layout authentication mount before the first request", async () => {
+    vi.stubGlobal("document", { body: { hasAttribute: () => false }, getElementById: () => null })
+    const result = await convexLoad(query, {}, { waitForData: true })
+    expect(result.isLoading).toBe(true)
+    expect(client.query).not.toHaveBeenCalled()
+    expect(client.onUpdate).not.toHaveBeenCalled()
+  })
+
+  it("does not wait for anonymous data while a sign-in navigation installs authentication", async () => {
+    hydratedPage()
+    client.client.hasAuth.mockReturnValue(false)
+    const result = await convexLoad(query, {}, { waitForData: true })
+    expect(result.isLoading).toBe(true)
+    expect(client.onUpdate).not.toHaveBeenCalled()
+    observe(() => result.data)
+    answer("signed-in conversation")
+    expect(result.data).toBe("signed-in conversation")
+  })
+
+  it("clears the loaded conversation when the live subscription revokes access", async () => {
+    hydratedPage()
+    const loading = convexLoad(query, {}, { waitForData: true })
+    answer("authorized conversation")
+    const result = await loading
+    observe(() => result.data)
+    client.onUpdate.mock.lastCall![3](new Error("Forbidden"))
+    expect(result.data).toBeUndefined()
+    expect(result.error?.message).toBe("Forbidden")
+  })
+
+  it("does not hide a failed authorization check behind a cached page", async () => {
+    hydratedPage()
+    const loading = convexLoad(query, {}, { waitForData: true })
+    client.onUpdate.mock.lastCall![3](new Error("Forbidden"))
+    await expect(loading).rejects.toThrow("Forbidden")
+  })
+
+  it("hands its subscription to the page instead of dropping and reopening it", async () => {
+    // client.query() unsubscribed on the first value, so the page's own
+    // subscription asked the server for the same thread a second time.
+    vi.useFakeTimers()
+    hydratedPage()
+    const unsubscribe = vi.fn()
+    client.onUpdate.mockReturnValue(unsubscribe)
+    const loading = convexLoad(query, {}, { waitForData: true })
+    answer("conversation")
+    const result = await loading
+    expect(unsubscribe).not.toHaveBeenCalled()
+    observe(() => result.data)
+    expect(client.onUpdate).toHaveBeenCalledTimes(2)
+    expect(unsubscribe).not.toHaveBeenCalled()
+    expect(client.query).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(WARM_SUBSCRIPTION_MS)
+    expect(unsubscribe).toHaveBeenCalledOnce()
+  })
+
+  it("releases a hovered thread that is never opened", async () => {
+    vi.useFakeTimers()
+    hydratedPage()
+    const unsubscribe = vi.fn()
+    client.onUpdate.mockReturnValue(unsubscribe)
+    const loading = convexLoad(query, {}, { waitForData: true })
+    answer("conversation")
+    await loading
+    vi.advanceTimersByTime(WARM_SUBSCRIPTION_MS - 1)
+    expect(unsubscribe).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(unsubscribe).toHaveBeenCalledOnce()
+  })
+
+  it("does not report a failed preload nobody waits for", async () => {
+    hydratedPage()
+    const unhandled = vi.fn()
+    process.on("unhandledRejection", unhandled)
+    await convexLoad(query, {})
+    client.onUpdate.mock.lastCall![3](new Error("Forbidden"))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    process.off("unhandledRejection", unhandled)
+    expect(unhandled).not.toHaveBeenCalled()
+  })
+
+  it("serves the server-rendered thread while the page hydrates, without a request", async () => {
+    // The thread page replaced its server HTML with "Opening thread…" on every
+    // full load: the hydrating load found an empty cache and did not wait.
+    const json = JSON.stringify([["test:current:{}", "server conversation"]])
+    vi.stubGlobal("document", {
+      body: { hasAttribute: () => false },
+      getElementById: () => ({ textContent: json }),
+    })
+    const result = await convexLoad(query, {}, { waitForData: true })
+    expect(result.data).toBe("server conversation")
+    expect(client.onUpdate).not.toHaveBeenCalled()
+    expect(client.client.localQueryResult).not.toHaveBeenCalled()
   })
 })
