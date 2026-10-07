@@ -23,7 +23,9 @@ import { createSubscriber } from "svelte/reactivity"
 type Skip = typeof SKIP
 
 type ArgsOrSkip<Query extends FunctionReference<"query">> =
-  FunctionArgs<Query> | "skip" | (() => FunctionArgs<Query> | "skip")
+  | FunctionArgs<Query>
+  | "skip"
+  | (() => FunctionArgs<Query> | "skip")
 
 interface ConvexQueryOptions<Query extends FunctionReference<"query">> {
   initialData?: FunctionReturnType<Query>
